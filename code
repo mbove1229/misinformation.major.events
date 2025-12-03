@@ -133,7 +133,6 @@ weekly <- data %>%
 model_time_weekly <- lm(prop_false ~ week_start, data = weekly)
 summary(model_time_weekly)
 
-#-----
 ggplot(data, aes(x = is_false)) +
   geom_bar(fill = "blue") +
   scale_x_continuous(breaks = c(0,1), labels = c("True", "False")) +
