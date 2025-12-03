@@ -1,0 +1,222 @@
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(olsrr)
+library(corrplot)
+library(lubridate)
+
+setwd("/Users/michaelbove/Desktop/Labs_Stats")
+
+data <- read.csv("stats_final.csv")
+#data can be found at "https://www.kaggle.com/datasets/techykajal/fakereal-news"
+
+head(data)
+str(data)
+
+#The following will be cleaning of the data
+#First, I want to remove some leading spaces
+data$Date <- trimws(data$Date)
+
+#I also want to convert to a proper, consistent date format 
+data$Date_clean <- as.Date(data$Date, format = "%B %d, %Y")
+
+#Below is just a sanity check and also to clairfy the spectrum of dates in the dataset
+head(data$Date_clean)
+min(data$Date_clean)
+max(data$Date_clean)
+
+#below isolates all variables in the Label column
+unique(data$Label)
+
+#I will not be using "full-flop", "half-flip" and "no-flip"
+# so i will be removing them from the data set 
+
+data <- data %>%
+  filter(
+    Label != "full-flop" &
+    Label != "half-flip" &
+    Label != "no-flip"
+  )
+
+#Now i want to create a binary system where
+#"false", "Pants-fire", "barely-true" and "half true" 
+#all return a 0, otherwise "true" and "mostly-true" return a 1
+data$is_false <- ifelse(
+  data$Label == "FALSE" |
+  data$Label == "pants-fire" |
+  data$Label == "barely-true" |
+  data$Label == "half-true",
+  1, 0
+)
+
+#below gives me a count of the true/false
+table(data$Label, data$is_false)
+
+# confirm your cleaned date column name
+head(data)
+
+#I want to focus on 4 major events to see if misinformation spikes during these events 
+#focusing on the week it occurs and the week that follows. the four events are:
+# 2016 Election: Nov 6-19, 2016 E1
+# 2018 Midterms: Nov 4-17, 2018 E2
+# 2019 Impeachment Inquiry: Sept 22 - Oct 5, 2019 E3
+# WHO declares COVID a Pandemic: Mar 11-24, 2020 E4
+
+#isolating the windows that these above events occurred in 
+data$Date_clean <- as.Date(data$Date_clean)
+# 2016 presidential election
+event1_start <- as.Date("2016-11-06")
+event1_end <- as.Date("2016-11-19")
+# 2018 midterms
+event2_start <- as.Date("2018-11-04")
+event2_end <- as.Date("2018-11-17")
+# 2019 Imeachment Inquiry
+event3_start <- as.Date("2019-09-22")
+event3_end <- as.Date("2019-10-05")
+# WHO Pandemic decleration 
+event4_start <- as.Date("2020-03-11")
+event4_end <- as.Date("2020-03-24")
+
+#creating an event_week variable
+data$event_week <- ifelse(
+  (data$Date_clean >= event1_start & data$Date_clean <= event1_end) |
+  (data$Date_clean >= event2_start & data$Date_clean <= event2_end) |
+  (data$Date_clean >= event3_start & data$Date_clean <= event3_end) |
+  (data$Date_clean >= event4_start & data$Date_clean <= event4_end),
+  1, 0
+)
+
+#some checks to get a better idea of the spread of my data:
+# how many true vs false
+table(data$is_false) # 7,097 false claims. 2,758 true claims
+
+#the proportion between true vs false
+prop.table(table(data$is_false)) # 72% false claims and 28% true claims
+
+#comparing event weeks vs true claims
+table(data$event_week, data$is_false) #raw counts
+
+#proportions within event vs non-event
+prop.table(table(data$event_week, data$is_false), margin = 1)
+# the above shows that during event weeks 81.7% of claims are false 
+# during non-event periods only 71.8% of claims are false 
+# this is great evidence to support my hypothesis
+
+#below is the chi-squared test to see if the difference is statistically significant
+chisq.test(table(data$event_week, data$is_false))
+# x^2 = 11.988, df = 1, p-value = 0.0005354
+# this shows me the increase in false claims during event weeks is not by chance
+
+#now logistical regression to see the odds ratio
+model1 <- glm(is_false ~ event_week, data = data, family = binomial)
+summary(model1)
+exp(0.56267) # odds ratio is 1.755
+#above shows that a claim is 1.755 times more likely to be false during event weeks
+# or in other words, 76% increase in the odds of a false claim during event weeks
+
+confint_model1 <- confint(model1)
+exp(confint_model1)
+#shows that the increase in odds of a claim being false during an event week
+#is somewhere between 29% and 143%
+
+data$week_start <- as.Date(cut(data$Date_clean, "week"))
+
+weekly <- data %>%
+  group_by(week_start) %>%
+  summarize(
+    prop_false = mean(is_false),
+    .groups = "drop"
+  )
+
+#LINEAR REGRESSION
+
+model_time_weekly <- lm(prop_false ~ week_start, data = weekly)
+summary(model_time_weekly)
+
+#-----
+ggplot(data, aes(x = is_false)) +
+  geom_bar(fill = "blue") +
+  scale_x_continuous(breaks = c(0,1), labels = c("True", "False")) +
+  labs(
+    x = "Claim Type",
+    y = "Count",
+    title = "Distribution of True vs False Claims"
+  )
+
+#LOGISTIC REGRESSION MODEL
+
+newdata <- data.frame(event_week = c(0, 1))
+predict <- predict(model1, newdata, type = "response")
+predict
+#shows that there is a 71.8% predicted probability a claim is false in non-event weeks
+# and a there is a 81.6% predicted probability that a claim is false in event weeks
+
+#VISUALIZATIONS
+
+plot_data <- data %>%
+  group_by(event_week) %>%
+  summarize(false_rate = mean(is_false))
+
+ggplot(plot_data, aes(x = factor(event_week), y = false_rate)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Event Week (0 = No, 1 = Yes)",
+    y = "Percent False",
+    title = "Proportion of False Claims in Event vs Non-Event Weeks"
+  )
+#above graph shows a direct comparison of event week false claims vs.
+#non-event week false claims
+
+
+data$week_start <- as.Date(cut(data$Date_clean, "week"))  # week-start (Sunday)
+
+weekly <- data %>%
+  group_by(week_start, event_week) %>%
+  summarize(
+    n = n(),
+    false_count = sum(is_false),
+    prop_false = mean(is_false),
+    .groups = "drop"
+  )
+
+# boxplot (weekly level)
+p_box <- ggplot(weekly, aes(x = factor(event_week), y = prop_false)) +
+  geom_boxplot() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    x = "Event week (0 = non-event, 1 = event)",
+    y = "Weekly proportion false",
+    title = "Distribution of weekly falsehood proportion: event vs non-event"
+  ) +
+  theme_minimal()
+print(p_box)
+
+
+# below makes a label for each claim with its event name attached
+data$event_name <- case_when(
+  data$Date_clean >= event1_start & data$Date_clean <= event1_end ~ "2016 Election",
+  data$Date_clean >= event2_start & data$Date_clean <= event2_end ~ "2018 Midterms",
+  data$Date_clean >= event3_start & data$Date_clean <= event3_end ~ "2019 Impeachment Inquiry",
+  data$Date_clean >= event4_start & data$Date_clean <= event4_end ~ "COVID Declared Pandemic",
+  TRUE ~ "Non-event"
+)
+
+# below summarizes the false rate by the event 
+plot_event <- data %>%
+  group_by(event_name) %>%
+  summarize(false_rate = mean(is_false), .groups = "drop")
+
+# bar plot
+ggplot(plot_event, aes(x = event_name, y = false_rate)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "",
+    y = "Percent False",
+    title = "False Claim Rate by Major Event"
+  )
+#below prints all the numbers I need to see finals results
+summary(model1)
+logLik(model1)
+summary(model_time_weekly)
